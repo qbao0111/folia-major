@@ -34,7 +34,7 @@ import { getCachedSongCoverUrl, getSongCacheWithLegacyMigration } from '../../..
 import { getSongCoverUrl } from '../../../../services/onlineMusic/songMetadata';
 import { useOnlineProviderAccountStore } from '../../../../stores/useOnlineProviderAccountStore';
 import { setStatusMessage as setStatusMsg, useStatusMessageStore } from '../../../../stores/useStatusMessageStore';
-import { setActiveLocalLyricsSource, setAudioSrc, setCachedCoverUrl, setCurrentSong, usePlaybackStore } from '../../../../stores/usePlaybackStore';
+import { setActiveLocalLyricsSource, setAudioSrc, setCachedCoverUrl, setCurrentSong, setPlaybackRoute, usePlaybackStore } from '../../../../stores/usePlaybackStore';
 import { askedSongKeyRef, replaceShownSong } from '../currentSong';
 import { onlineFailureToast } from '../source/onlineFailureToast';
 import { loadLocalSongAudio, loadLocalSongHifiSource, loadNavidromeSongAudio, loadOnlineSongAudio } from '../source/songAudioSource';
@@ -42,6 +42,7 @@ import { useLyricSettingsStore } from '../../../../stores/useLyricSettingsStore'
 import { useHifiSettingsStore } from '../../../../stores/useHifiSettingsStore';
 import { beginHifiTrack, hifiRouteFor, releaseUnclaimedHifiTrack, whenHifiRuntimeKnown } from '../../../../services/hifi/hifiPlayback';
 import type { PlaybackRoute } from '../../../../types/hifi';
+import { isSoloistEligible } from '../../../../services/soloist/soloistPlayback';
 
 // src/components/app/playback/restore/restorePlaybackSource.ts
 // Rehydrates playable audio and lyrics for a remembered song without reusing stale blob URLs.
@@ -376,41 +377,48 @@ const restoreSourceForSong = async (
         });
     }
 
-    if (!omni.canPlaySong(song)) {
-        tellFailure(onlineFailureOf({ operation: 'audio', providerId: getOnlineProviderIdForSong(song) ?? undefined }, {}));
-        return 'failed';
-    }
+    const onSoloist = isSoloistEligible(song);
+    if (onSoloist) {
+        setPlaybackRoute('soloist');
+        setAudioSrc(null);
+        currentOnlineAudioUrlFetchedAtRef.current = null;
+    } else {
+        if (!omni.canPlaySong(song)) {
+            tellFailure(onlineFailureOf({ operation: 'audio', providerId: getOnlineProviderIdForSong(song) ?? undefined }, {}));
+            return 'failed';
+        }
 
-    // Where the platform could not be reached the load asks again by itself while the restore is wanted,
-    // unless the caller has a source to fall back on.
-    const audioResult = await loadOnlineSongAudio(song, audioQuality, null, hasFallbackSource
-        ? {}
-        : { retry: { isCurrent: () => !overtaken() } });
-    if (overtaken()) {
-        // Never played: nothing holds this URL.
-        if (audioResult.kind === 'ok' && audioResult.blobUrl) URL.revokeObjectURL(audioResult.blobUrl);
-        return 'stale';
-    }
-    if (audioResult.kind === 'unavailable') {
-        tellFailure(audioResult.failure);
-        return 'failed';
-    }
+        // Where the platform could not be reached the load asks again by itself while the restore is wanted,
+        // unless the caller has a source to fall back on.
+        const audioResult = await loadOnlineSongAudio(song, audioQuality, null, hasFallbackSource
+            ? {}
+            : { retry: { isCurrent: () => !overtaken() } });
+        if (overtaken()) {
+            // Never played: nothing holds this URL.
+            if (audioResult.kind === 'ok' && audioResult.blobUrl) URL.revokeObjectURL(audioResult.blobUrl);
+            return 'stale';
+        }
+        if (audioResult.kind === 'unavailable') {
+            tellFailure(audioResult.failure);
+            return 'failed';
+        }
 
-    if (audioResult.blobUrl) {
-        replaceBlobUrl(blobUrlRef, audioResult.blobUrl);
-    }
-    currentOnlineAudioUrlFetchedAtRef.current = audioResult.fetchedAt;
-    setAudioSrc(audioResult.audioSrc);
+        if (audioResult.blobUrl) {
+            replaceBlobUrl(blobUrlRef, audioResult.blobUrl);
+        }
+        currentOnlineAudioUrlFetchedAtRef.current = audioResult.fetchedAt;
+        setAudioSrc(audioResult.audioSrc);
 
-    const restoredSong = applyOnlineAudioSourceMetadata(song, audioResult.replayGain);
-    if (restoredSong.replayGain) {
-        setCurrentSong(prev => {
-            if (!prev || !isSamePlaybackSong(prev, song)) return prev;
-            return { ...prev, replayGain: restoredSong.replayGain };
-        });
-        const restoredQueue = queueAfterRestore(restoredSong, () => replacePlaybackSongInQueue(queue || [restoredSong], restoredSong));
-        if (restoredQueue.write) setPlayQueue?.(restoredQueue.write);
-        void persistLastPlaybackCache?.(restoredSong, restoredQueue.save);
+        const restoredSong = applyOnlineAudioSourceMetadata(song, audioResult.replayGain);
+        if (restoredSong.replayGain) {
+            setCurrentSong(prev => {
+                if (!prev || !isSamePlaybackSong(prev, song)) return prev;
+                return { ...prev, replayGain: restoredSong.replayGain };
+            });
+            const restoredQueue = queueAfterRestore(restoredSong, () => replacePlaybackSongInQueue(queue || [restoredSong], restoredSong));
+            if (restoredQueue.write) setPlayQueue?.(restoredQueue.write);
+            void persistLastPlaybackCache?.(restoredSong, restoredQueue.save);
+        }
     }
 
     // The source has landed, so lyrics that fail from here on are not a failed restore: told as one,

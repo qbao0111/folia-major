@@ -113,6 +113,8 @@ const { registerHifiIpc } = require('./hifi/hifiIpc.cjs');
 const { createPipewireProbe, collectOwnPids } = require('./hifi/pipewireProbe.cjs');
 const { createApprovedMpvPathStore, isReservedHifiSettingKey } = require('./hifi/approvedMpvPath.cjs');
 const { registerMprisIpc } = require('./hifi/mpris/mprisIpc.cjs');
+const { SoloistService } = require('./spotify/soloist/soloistService.cjs');
+const { registerSoloistIpc } = require('./spotify/soloist/soloistIpc.cjs');
 const { sanitizeDualTheme: sanitizeGeneratedDualTheme } = require('../shared/themeSanitizer.cjs');
 const {
   aiProviderLabel,
@@ -351,7 +353,12 @@ const hifiMpris = process.platform === 'linux'
   })
   : null;
 // Last resort for every way out, app.exit() included: an mpv left behind would keep playing.
-process.on('exit', () => hifiSession.killSync());
+process.on('exit', () => {
+  hifiSession.killSync();
+  try { soloistService.stop(); } catch {}
+});
+const soloistService = new SoloistService(app.getPath('userData'));
+registerSoloistIpc(soloistService);
 // KuGou credentials stay inside the main process and are encrypted lazily after Electron is ready.
 // The bridge refuses Linux's plaintext `basic_text` fallback and degrades to an in-memory session.
 const kugouApiBridge = createKugouApiBridge({ store, safeStorage });
@@ -6380,6 +6387,7 @@ app.on('before-quit', (event) => {
   isQuitHeldForAccounts = false;
   transcodeService.dispose();
   hifiSession.killSync();
+  try { soloistService.stop(); } catch {}
   // An mpv download the quit cuts off is stopped: its partial files go now if there is time, or
   // with the installer's sweep of leftovers next time.
   hifiInstaller.cancel();

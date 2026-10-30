@@ -30,6 +30,7 @@ import { useAudioSettingsStore } from '../stores/useAudioSettingsStore';
 import { onlineFailureOf } from './onlineMusic/failure/onlineFailureCase';
 import { noteOnlineRequestCooldown, onlineRequestCooldown } from './onlineMusic/failure/onlineRequestCooldown';
 import { usePlaybackStore } from '../stores/usePlaybackStore';
+import { isSoloistEligible } from './soloist/soloistPlayback';
 
 // Prefetch configuration
 //
@@ -55,6 +56,7 @@ const MAX_PREFETCH_CACHE_SIZE = 200; // Evict least recently used entries beyond
  * try to fetch. Never awaited: a slow decode must not hold up the song after this one.
  */
 const analyseForAutomix = (song: SongResult, audioUrl: string | null | undefined) => {
+  if (isSoloistEligible(song)) return;
   const settingsAudioSettings = useAudioSettingsStore.getState();
   const settingsAutomixSettings = useAutomixSettingsStore.getState();
   const settingsLyricSettings = useLyricSettingsStore.getState();
@@ -234,6 +236,9 @@ export const resolvePrefetchAudioUrl = async (
     audioQuality: AudioQualityPreference,
     signal: AbortSignal,
 ): Promise<PrefetchedAudioUrl | null> => {
+    if (isSoloistEligible(song)) {
+        return null;
+    }
     const sourceRef = getPlaybackSourceRef(song);
     const providerId = sourceRef.kind === 'online' ? sourceRef.providerId : undefined;
     try {
@@ -296,6 +301,7 @@ const prefetchSong = async (
 
     const songId = song.id;
     const songKey = getPrefetchSongKey(song);
+    const onSoloist = isSoloistEligible(song);
 
     // Check if already prefetched with valid URL
     const existing = prefetchCache.get(songKey);
@@ -305,7 +311,7 @@ const prefetchSong = async (
   const currentSettingsLyricSettings = useLyricSettingsStore.getState();
     const lyricPreferenceMatches = !currentSettingsLyricSettings.autoUseBestLyric
         || existing?.lyricPreferenceSource === currentSettingsLyricSettings.preferredAlternativeLyricSource;
-    if (existing && lyricPreferenceMatches && existing.audioUrl && isUrlValid(existing.audioUrlFetchedAt) && (existing.lyrics || existing.lyricRaw?.isPureMusic)) {
+    if (existing && lyricPreferenceMatches && (onSoloist || (existing.audioUrl && isUrlValid(existing.audioUrlFetchedAt))) && (existing.lyrics || existing.lyricRaw?.isPureMusic)) {
         console.log(`[Prefetch] Already cached: ${song.name}`);
         touchPrefetchCacheEntry(songKey, existing);
         analyseForAutomix(song, existing.audioUrl);
@@ -328,7 +334,7 @@ const prefetchSong = async (
     };
 
     // Prefetch audio URL (if not cached or expired)
-    if (!data.audioUrl) {
+    if (!onSoloist && !data.audioUrl) {
         const resolved = await resolvePrefetchAudioUrl(song, audioQuality, signal);
         if (resolved) {
             data.audioUrl = resolved.audioUrl;

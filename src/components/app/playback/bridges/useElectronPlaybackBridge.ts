@@ -35,6 +35,7 @@ import { subscribeRemoteActions } from '../../../../mods/folium/registries/remot
 import { errorMessage } from '../../../../utils/errorText';
 import { getObservedMedia, hifiMediaShim } from '../../../../services/hifi/hifiMediaShim';
 import { seekHifiRoute } from '../../../hifi/hifiRouteTransport';
+import { soloistAdapter } from '../../../../services/soloist/soloistAdapter';
 
 // Bridges Electron-specific shell features without coupling to UI components.
 const DISCORD_PRESENCE_SNAPSHOT_INTERVAL_MS = 1000;
@@ -675,7 +676,10 @@ export const useElectronPlaybackBridge = ({
                 // During a blend the visible track is the outgoing one; route through the same
                 // cancel-and-resume the window's bar uses instead of moving the hidden incoming deck.
                 // mpv seeks on the HiFi route; like the deck's seek below, it leaves a paused track paused.
-                if (seekHifiRoute(nextTime)) {
+                if (usePlaybackStore.getState().playbackRoute === 'soloist') {
+                    void soloistAdapter.seek(nextTime * 1000);
+                    currentTime.set(nextTime);
+                } else if (seekHifiRoute(nextTime)) {
                     // Handled: mpv has the song, the deck has no source.
                 } else if (onRemoteTransitionSeek?.(nextTime)) {
                     // Handled: the re-play seeks the deck itself once it reloads.
@@ -749,7 +753,10 @@ export const useElectronPlaybackBridge = ({
                     // INCOMING deck, silent and holding a different track, so moving it moves
                     // nothing the listener can hear. The transition-aware path cancels the blend
                     // back onto the track on screen and seeks that instead.
-                    if (seekHifiRoute(nextTime)) {
+                    if (usePlaybackStore.getState().playbackRoute === 'soloist') {
+                        void soloistAdapter.seek(nextTime * 1000);
+                        currentTime.set(nextTime);
+                    } else if (seekHifiRoute(nextTime)) {
                         // Handled: mpv has the song on the HiFi route.
                     } else if (onRemoteTransitionSeek?.(nextTime)) {
                         // Handled: that path seeks the deck it kept.

@@ -89,6 +89,7 @@ import { useAppPreferences } from './hooks/useAppPreferences';
 import { useElectronPlaybackBridge } from './components/app/playback/bridges/useElectronPlaybackBridge';
 import { useHifiPlaybackBridge } from './components/hifi/useHifiPlaybackBridge';
 import { seekHifiRoute } from './components/hifi/hifiRouteTransport';
+import { isSoloistRoute, soloistAdapter } from './services/soloist/soloistAdapter';
 import { useHifiAutomixGate } from './components/hifi/useHifiAutomixGate';
 import { useWebEngineYield } from './components/hifi/useWebEngineYield';
 import { useHifiMediaSessionKeepAlive } from './components/hifi/useHifiMediaSessionKeepAlive';
@@ -596,6 +597,11 @@ export default function App() {
             audioRef.current.volume = clampedVolume;
             audioRef.current.muted = isMuted;
         }
+
+        if (isSoloistRoute()) {
+            const soloistVol = isMuted ? 0 : Math.round(clampedVolume * 100);
+            void soloistAdapter.setVolume(soloistVol);
+        }
     }, [isMuted]);
 
     const { handleAudioOutputDeviceChange } = useAudioOutputDevice({
@@ -620,6 +626,10 @@ export default function App() {
                 const hifiSettings = useHifiSettingsStore.getState();
                 if (isHifiRoute() && hifiSettings.softwareVolume) {
                     void hifiEngine.configure(selectHifiEngineConfig(hifiSettings, nextVolume, isMuted));
+                }
+                if (isSoloistRoute()) {
+                    const soloistVol = isMuted ? 0 : Math.round(nextVolume * 100);
+                    void soloistAdapter.setVolume(soloistVol);
                 }
             }
         });
@@ -2005,6 +2015,12 @@ export default function App() {
     seekDuringTransitionRef.current = (time: number) => {
         // HiFi route: mpv seeks. Arrow keys and the remote seek mpv before this, so it is seekMainAudio's and resumes.
         if (seekHifiRoute(time, { resume: true })) return true;
+        if (usePlaybackStore.getState().playbackRoute === 'soloist') {
+            void soloistAdapter.seek(time * 1000);
+            currentTime.set(time);
+            setPlayerState(PlayerState.PLAYING);
+            return true;
+        }
         const tailElement = cancelBlendToDisplayedTrack(true);
         if (!tailElement) return false;
         const seekTarget = Math.max(0, time);
