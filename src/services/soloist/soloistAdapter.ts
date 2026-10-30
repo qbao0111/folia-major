@@ -14,6 +14,13 @@ export const isSoloistRoute = (): boolean => {
   return usePlaybackStore.getState().playbackRoute === 'soloist';
 };
 
+type PlaybackSyncHandler = (state: SoloistPlaybackState) => void;
+let playbackSyncHandler: PlaybackSyncHandler | null = null;
+
+export const setSoloistPlaybackSyncHandler = (handler: PlaybackSyncHandler) => {
+  playbackSyncHandler = handler;
+};
+
 class ElectronSoloistAdapter implements SoloistAdapter {
   private state: SoloistPlaybackState = initialSoloistPlaybackState();
   private listeners = new Set<(state: SoloistPlaybackState) => void>();
@@ -42,7 +49,16 @@ class ElectronSoloistAdapter implements SoloistAdapter {
   }
 
   private updateState(incoming: SoloistPlaybackState) {
-    this.state = incoming;
+    // Re-anchor anchorMono in the Renderer process's own monotonic clock domain.
+    const transitMs = incoming.anchorWall && incoming.status === 'playing'
+      ? Math.max(0, Math.min(2000, Date.now() - incoming.anchorWall))
+      : 0;
+
+    this.state = {
+      ...incoming,
+      positionMs: incoming.positionMs + transitMs,
+      anchorMono: performance.now(),
+    };
 
     // Synchronize Folia player store when Soloist route is actively sounding
     if (isSoloistRoute()) {
@@ -68,9 +84,17 @@ class ElectronSoloistAdapter implements SoloistAdapter {
       }
     }
 
+    if (playbackSyncHandler) {
+      try {
+        playbackSyncHandler(this.state);
+      } catch (err) {
+        console.error('[SoloistAdapter] Playback sync handler error:', err);
+      }
+    }
+
     for (const listener of this.listeners) {
       try {
-        listener(incoming);
+        listener(this.state);
       } catch (err) {
         console.error('[SoloistAdapter] Listener error:', err);
       }

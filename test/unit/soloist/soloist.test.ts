@@ -6,7 +6,12 @@ import {
 } from '../../../electron/spotify/soloist/soloistEngine.cjs';
 import { parseLoopbackEndpoint } from '../../../electron/spotify/soloist/soloistService.cjs';
 import { isSoloistRoute, soloistAdapter } from '../../../src/services/soloist/soloistAdapter';
-import { isSoloistEligible, playSoloistTrack } from '../../../src/services/soloist/soloistPlayback';
+import {
+  isSoloistEligible,
+  playSoloistTrack,
+  adoptSoloistTrack,
+  syncSoloistPlaybackState,
+} from '../../../src/services/soloist/soloistPlayback';
 import { useSoloistSettingsStore } from '../../../src/services/soloist/useSoloistSettingsStore';
 import { resolvePrefetchAudioUrl } from '../../../src/services/prefetchService';
 import { setPlaybackRoute, setPlayerState, usePlaybackStore } from '../../../src/stores/usePlaybackStore';
@@ -380,5 +385,75 @@ describe('Soloist Playback Confirmation & Progress Sync', () => {
     const isHifi = false;
     const canTriggerSpace = Boolean(audioSrc || isHifi || isSoloistRoute());
     expect(canTriggerSpace).toBe(true);
+  });
+
+  it('re-anchors anchorMono into the renderer clock domain on incoming state', () => {
+    // Simulate main process with a huge offset
+    const staleState: any = {
+      connection: 'connected',
+      loggedIn: true,
+      active: true,
+      status: 'playing',
+      positionMs: 5000,
+      anchorMono: 999999999, // Way higher than renderer performance.now()
+      anchorWall: Date.now() - 50,
+      speed: 1,
+      track: {
+        uri: 'spotify:track:xyz',
+        name: 'Track',
+        artist: 'Artist',
+        album: 'Album',
+        durationMs: 60000,
+      },
+    };
+
+    (soloistAdapter as any).updateState(staleState);
+    const progressMs = soloistAdapter.getProgressMs();
+
+    // Must be ~5000ms + transit (~5050ms), NOT 0 or 5000ms stuck
+    expect(progressMs).toBeGreaterThanOrEqual(5000);
+    expect(progressMs).toBeLessThanOrEqual(6000);
+  });
+
+  it('automatically adopts track and initiates lyrics loading when Soloist is active', async () => {
+    useSoloistSettingsStore.getState().setBackend('soloist');
+    useSoloistSettingsStore.getState().setSoloistEnabled(true);
+    setPlaybackRoute('web');
+
+    const incomingTrack = {
+      uri: 'spotify:track:adopted123',
+      name: 'PHÓNG ZÌN ZÌN',
+      artist: 'tlinh, Low G',
+      album: 'FLVR',
+      artwork: 'https://example.com/cover.jpg',
+      durationMs: 203000,
+    };
+
+    const incomingState: any = {
+      connection: 'connected',
+      loggedIn: true,
+      active: true,
+      status: 'playing',
+      positionMs: 27000,
+      anchorMono: performance.now(),
+      anchorWall: Date.now(),
+      speed: 1,
+      track: incomingTrack,
+    };
+
+    await syncSoloistPlaybackState(incomingState);
+
+    // Route must switch to soloist
+    expect(usePlaybackStore.getState().playbackRoute).toBe('soloist');
+    // Current song must be adopted
+    const current = usePlaybackStore.getState().currentSong;
+    expect(current).toBeDefined();
+    expect(current?.id).toBe('adopted123');
+    expect(current?.name).toBe('PHÓNG ZÌN ZÌN');
+    expect(current?.sourceRef?.providerId).toBe('spotify');
+    // Duration must be updated
+    expect(usePlaybackStore.getState().duration).toBe(203);
+    // Player state must be PLAYING
+    expect(usePlaybackStore.getState().playerState).toBe(PlayerState.PLAYING);
   });
 });

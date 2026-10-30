@@ -28,6 +28,7 @@ export interface SoloistPlaybackState {
   track: SoloistTrack | null;
   positionMs: number;
   anchorMono: number;
+  anchorWall?: number;
   speed: number;
   volume: number;
   shuffle: boolean;
