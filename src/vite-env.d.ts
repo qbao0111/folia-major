@@ -1122,6 +1122,21 @@ declare global {
         onInstallProgress: (callback: (progress: import('./types/hifi').HifiInstallProgress) => void) => () => void;
         onReadRequest: (callback: (request: import('./types/hifi').HifiReadRequest) => void) => () => void;
       };
+      /** 官方 Soloist 本地引擎。只在 Windows 桌面版存在。 */
+      soloist?: {
+        detect: () => Promise<{ ok: boolean; path?: string; error?: string }>;
+        pickFile: () => Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
+        select: (exePath: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
+        getSavedKey: () => Promise<{ ok: boolean; hasKey?: boolean; error?: string }>;
+        saveKey: (key: string) => Promise<{ ok: boolean; error?: string }>;
+        start: (options?: { key?: string; remember?: boolean }) => Promise<{ ok: boolean; status?: import('./services/soloist/types').SoloistPlaybackState; error?: string }>;
+        stop: () => Promise<{ ok: boolean; error?: string }>;
+        forget: () => Promise<{ ok: boolean; error?: string }>;
+        getStatus: () => Promise<import('./services/soloist/types').SoloistPlaybackState>;
+        getProgress: () => Promise<{ progressSec: number; progressMs: number }>;
+        command: (action: string, payload?: unknown) => Promise<{ ok: boolean; error?: string }>;
+        onState: (callback: (state: import('./services/soloist/types').SoloistPlaybackState) => void) => () => void;
+      };
     };
   }
 }

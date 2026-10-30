@@ -1,7 +1,7 @@
 // HiFi 后端的跨进程契约：主进程 electron/hifi/* 经 preload 的 window.electron.hifi 与渲染端 src/services/hifi/* 共用这些形状。
 
-/** 当前这首歌由哪套引擎发声：web 是 <audio> + Web Audio，hifi 是 mpv。 */
-export type PlaybackRoute = 'web' | 'hifi';
+/** 当前这首歌由哪套引擎发声：web 是 <audio> + Web Audio，hifi 是 mpv，soloist 是官方 Soloist 引擎。 */
+export type PlaybackRoute = 'web' | 'hifi' | 'soloist';
 
 /** 主进程只回传错误码，文案由渲染端按 hifi.errors.<code> 取。 */
 export type HifiErrorCode =

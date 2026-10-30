@@ -51,8 +51,9 @@ import { dispatchSearchTrackAction } from '../../search/searchTrackActions';
 import { playbackFade } from '../../../../services/playbackFade';
 import { getProviderSongMetadata } from '../../../../services/onlineMusic/songMetadata';
 import { setStatusMessage as setStatusMsg } from '../../../../stores/useStatusMessageStore';
-import { setAudioSrc, setCachedCoverUrl, setCurrentLineIndex, setCurrentSong, setDuration, setIsFmMode, setPlayQueue, setPlayerState, startLoadingToPlay, usePlaybackStore } from '../../../../stores/usePlaybackStore';
+import { setAudioSrc, setCachedCoverUrl, setCurrentLineIndex, setCurrentSong, setDuration, setIsFmMode, setPlayQueue, setPlaybackRoute, setPlayerState, startLoadingToPlay, usePlaybackStore } from '../../../../stores/usePlaybackStore';
 import { askedSongKeyRef, askForSong, playsDroppedSoFar, showSong, startOfAskedSong, startPlay, withdrawAsk } from '../currentSong';
+import { isSoloistEligible, isSoloistRoute, playSoloistTrack, soloistAdapter } from '../../../../services/soloist/soloistPlayback';
 import { loadOnlineSongAudio } from '../source/songAudioSource';
 import { onlineFailureToast } from '../source/onlineFailureToast';
 import { offersRetry, onlineFailureOf, stopsPlayback, type OnlineFailure } from '../../../../services/onlineMusic/failure/onlineFailureCase';
@@ -795,6 +796,7 @@ export function usePlaybackQueueController({
             fmModeBeforePendingPlayRef.current = null;
             // Handed over: onPlayLocalSong takes a play of its own, and whether the song before it is
             // overtaken is that play's to say now.
+            if (isSoloistRoute()) { void soloistAdapter.pause(); }
             isLatestPlaybackRequest.abandon();
             await onPlayLocalSong(resolvedLocalData, localQueue, {
                 ...startOptions,
@@ -820,6 +822,7 @@ export function usePlaybackQueueController({
                 .filter((queuedSong): queuedSong is NavidromeSong => Boolean(queuedSong));
             fmModeBeforePendingPlayRef.current = null;
             // Handed over, as to onPlayLocalSong above.
+            if (isSoloistRoute()) { void soloistAdapter.pause(); }
             isLatestPlaybackRequest.abandon();
             await onPlayNavidromeSong(navidromeSong, navidromeQueue, {
                 ...startOptions,
@@ -832,7 +835,14 @@ export function usePlaybackQueueController({
 
         prefetched = getPrefetchedData(song, audioQuality);
 
-        const hasImmediatePrefetchedAudio = Boolean(
+        const onSoloist = isSoloistEligible(song);
+
+        if (!onSoloist && isSoloistRoute()) {
+            void soloistAdapter.pause();
+            setPlaybackRoute('web');
+        }
+
+        const hasImmediatePrefetchedAudio = onSoloist || Boolean(
             prefetched?.audioUrl &&
             prefetched.audioUrl !== 'CACHED_IN_DB'
         );
@@ -849,39 +859,41 @@ export function usePlaybackQueueController({
             setStatusMsg({ type: 'info', text: t('status.loadingSong') });
         }
 
-        try {
-            // Where the platform could not be reached the load asks again by itself while this play is
-            // wanted, and says so.
-            preloadedOnlineAudioResult = await loadOnlineSongAudio(song, audioQuality, prefetched, {
-                retry: {
-                    isCurrent: isLatestPlaybackRequest,
-                    onRetrying: shown => {
-                        if (isLatestPlaybackRequest()) {
-                            setStatusMsg({ type: 'info', text: t('status.songRetrying'), ...(shown.providerId ? { providerId: shown.providerId } : {}) });
-                        }
+        if (!onSoloist) {
+            try {
+                // Where the platform could not be reached the load asks again by itself while this play is
+                // wanted, and says so.
+                preloadedOnlineAudioResult = await loadOnlineSongAudio(song, audioQuality, prefetched, {
+                    retry: {
+                        isCurrent: isLatestPlaybackRequest,
+                        onRetrying: shown => {
+                            if (isLatestPlaybackRequest()) {
+                                setStatusMsg({ type: 'info', text: t('status.songRetrying'), ...(shown.providerId ? { providerId: shown.providerId } : {}) });
+                            }
+                        },
                     },
-                },
-            });
-            if (!isLatestPlaybackRequest()) {
-                giveBackUnusedCopy();
-                isLatestPlaybackRequest.abandon();
-                return;
-            }
+                });
+                if (!isLatestPlaybackRequest()) {
+                    giveBackUnusedCopy();
+                    isLatestPlaybackRequest.abandon();
+                    return;
+                }
 
-            if (preloadedOnlineAudioResult.kind === 'unavailable') {
-                const shown = preloadedOnlineAudioResult.failure;
-                if (shown.case === 'taken-down') await presentTakenDown(shown);
-                else presentOnlineFailure(shown);
+                if (preloadedOnlineAudioResult.kind === 'unavailable') {
+                    const shown = preloadedOnlineAudioResult.failure;
+                    if (shown.case === 'taken-down') await presentTakenDown(shown);
+                    else presentOnlineFailure(shown);
+                    return;
+                }
+            } catch (error) {
+                if (!isLatestPlaybackRequest()) {
+                    isLatestPlaybackRequest.abandon();
+                    return;
+                }
+                console.error('[App] Failed to fetch song URL:', error);
+                presentOnlineFailure(onlineFailureOf({ operation: 'audio', providerId }, { error }));
                 return;
             }
-        } catch (error) {
-            if (!isLatestPlaybackRequest()) {
-                isLatestPlaybackRequest.abandon();
-                return;
-            }
-            console.error('[App] Failed to fetch song URL:', error);
-            presentOnlineFailure(onlineFailureOf({ operation: 'audio', providerId }, { error }));
-            return;
         }
 
         const songKey = getPlaybackSongKey(song);
@@ -910,14 +922,14 @@ export function usePlaybackQueueController({
 
         // Written only now: a play that gave up above leaves the intent to play, the time to resume
         // at and the address's fetch time to the song the key went back to.
-        shouldAutoPlayRef.current = true;
+        shouldAutoPlayRef.current = !onSoloist;
         pendingResumeTimeRef.current = null;
         lastAudioRecoverySourceRef.current = null;
         currentOnlineAudioUrlFetchedAtRef.current = null;
         setLyrics(null);
         setCurrentLineIndex(-1);
         currentTime.set(0);
-        setDuration(0);
+        setDuration(onSoloist && song.durationMs ? song.durationMs / 1000 : 0);
         showSong({ ...resolvedSong, onlineLyricsState: onlineLyricsState ?? undefined });
         setCachedCoverUrl(null);
         setAudioSrc(null);
@@ -961,21 +973,44 @@ export function usePlaybackQueueController({
             setCachedCoverUrl(prefetched.coverUrl);
         }
 
-        const audioResult = preloadedOnlineAudioResult;
-        if (!audioResult || audioResult.kind !== 'ok') {
-            setStatusMsg({ type: 'error', text: t('status.playbackError') });
-            setPlayerState(PlayerState.IDLE);
-            setIsLyricsLoading(false);
-            return;
-        }
+        let isPreview = false;
+        if (onSoloist) {
+            setPlaybackRoute('soloist');
+            setAudioSrc(null);
+            if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.src = '';
+            }
+            try {
+                await playSoloistTrack(song);
+            } catch (soloistErr: any) {
+                console.error('[Soloist] Play error:', soloistErr);
+                setStatusMsg({
+                    type: 'error',
+                    text: soloistErr?.message || 'Could not start playback on Soloist engine.',
+                    persistent: false,
+                });
+                setPlayerState(PlayerState.IDLE);
+            }
+        } else {
+            const audioResult = preloadedOnlineAudioResult;
+            if (!audioResult || audioResult.kind !== 'ok') {
+                setStatusMsg({ type: 'error', text: t('status.playbackError') });
+                setPlayerState(PlayerState.IDLE);
+                setIsLyricsLoading(false);
+                return;
+            }
 
-        if (audioResult.blobUrl) {
-            blobUrlRef.current = audioResult.blobUrl;
+            isPreview = Boolean(audioResult.preview);
+            if (audioResult.blobUrl) {
+                blobUrlRef.current = audioResult.blobUrl;
+            }
+            // Here only an http address keeps its fetch time (the restore and the recovery keep it for
+            // every address that is not a blob).
+            currentOnlineAudioUrlFetchedAtRef.current = audioResult.audioSrc.startsWith('http') ? audioResult.fetchedAt : null;
+            setPlaybackRoute('web');
+            setAudioSrc(audioResult.audioSrc);
         }
-        // Here only an http address keeps its fetch time (the restore and the recovery keep it for
-        // every address that is not a blob).
-        currentOnlineAudioUrlFetchedAtRef.current = audioResult.audioSrc.startsWith('http') ? audioResult.fetchedAt : null;
-        setAudioSrc(audioResult.audioSrc);
 
         try {
             await loadOnlineSongLyrics(song, prefetched, userId, {
@@ -996,7 +1031,7 @@ export function usePlaybackQueueController({
                 onAutoMatchStart: () => {
                     // A preview clip plays as it comes and is told of as it starts (previewNotice.ts),
                     // which is when this search starts too: its notice would take the preview's place.
-                    if (!audioResult.preview) setStatusMsg({ type: 'info', text: t('status.matchingBestLyrics') });
+                    if (!isPreview) setStatusMsg({ type: 'info', text: t('status.matchingBestLyrics') });
                 },
                 onDone: () => setIsLyricsLoading(false),
             });

@@ -445,4 +445,22 @@ contextBridge.exposeInMainWorld('electron', {
             return () => ipcRenderer.removeListener('hifi:read', listener);
         },
     },
+    soloist: {
+        detect: () => ipcRenderer.invoke('soloist:detect'),
+        pickFile: () => ipcRenderer.invoke('soloist:pick-file'),
+        select: (exePath) => ipcRenderer.invoke('soloist:select', exePath),
+        getSavedKey: () => ipcRenderer.invoke('soloist:get-saved-key'),
+        saveKey: (key) => ipcRenderer.invoke('soloist:save-key', key),
+        start: (options) => ipcRenderer.invoke('soloist:start', options),
+        stop: () => ipcRenderer.invoke('soloist:stop'),
+        forget: () => ipcRenderer.invoke('soloist:forget'),
+        getStatus: () => ipcRenderer.invoke('soloist:get-status'),
+        getProgress: () => ipcRenderer.invoke('soloist:get-progress'),
+        command: (action, payload) => ipcRenderer.invoke('soloist:command', action, payload),
+        onState: (callback) => {
+            const listener = (_event, state) => callback(state);
+            ipcRenderer.on('soloist:state-changed', listener);
+            return () => ipcRenderer.removeListener('soloist:state-changed', listener);
+        },
+    },
 });

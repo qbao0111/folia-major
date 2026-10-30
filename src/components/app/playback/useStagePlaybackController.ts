@@ -49,6 +49,7 @@ import { currentTime } from '../../../stores/motionSignals';
 import { useAudioSettingsStore } from '../../../stores/useAudioSettingsStore';
 import type { PlaybackRoute } from '../../../types/hifi';
 import { getHifiPosition, isHifiRoute } from '../../../services/hifi/hifiPlayback';
+import { getSoloistPosition, isSoloistRoute } from '../../../services/soloist/soloistAdapter';
 import { restorePlaybackSourceForSong } from './restore/restorePlaybackSource';
 import { findPlaybackDecks } from '../../hifi/useWebEngineYield';
 
@@ -209,8 +210,9 @@ export function useStagePlaybackController({
     const playerCapSongKeyRef = useRef('');
 
     const buildPlaybackSnapshot = useCallback((): RoutedPlaybackSnapshot => {
-        // On the HiFi route mpv sounds the song and the deck sits idle: the position is mpv's.
+        // On the HiFi or Soloist route an external engine sounds the song and the deck sits idle: the position is the external engine's.
         const onHifi = isHifiRoute();
+        const onSoloist = isSoloistRoute();
         return {
             currentSong,
             lyrics,
@@ -219,10 +221,10 @@ export function useStagePlaybackController({
             playQueue,
             isFmMode,
             playerState,
-            currentTime: onHifi ? getHifiPosition() : audioRef.current?.currentTime ?? currentTime.get(),
+            currentTime: onHifi ? getHifiPosition() : onSoloist ? getSoloistPosition() : audioRef.current?.currentTime ?? currentTime.get(),
             duration,
             currentLineIndex,
-            route: onHifi ? 'hifi' : 'web',
+            route: onHifi ? 'hifi' : onSoloist ? 'soloist' : 'web',
         };
     }, [audioRef, audioSrc, cachedCoverUrl, currentLineIndex, currentSong, currentTime, duration, isFmMode, lyrics, playQueue, playerState]);
 
@@ -233,8 +235,8 @@ export function useStagePlaybackController({
         // instead, which routes it to HiFi again and starts it there at the saved position.
         const restoresSource = Boolean(
             snapshot && song
-            && (isLocalPlaybackSong(song) || isNavidromePlaybackSong(song))
-            && (snapshot.route === 'hifi' || !snapshot.audioSrc),
+            && ((isLocalPlaybackSong(song) || isNavidromePlaybackSong(song)) || snapshot.route === 'soloist')
+            && (snapshot.route === 'hifi' || snapshot.route === 'soloist' || !snapshot.audioSrc),
         );
         pendingResumeTimeRef.current = snapshot ? Math.max(0, snapshot.currentTime) : null;
         shouldAutoPlayRef.current = snapshot?.playerState === PlayerState.PLAYING;
