@@ -73,5 +73,6 @@ export interface SoloistAdapter {
   setShuffle(enabled: boolean): Promise<void>;
   setRepeat(mode: 'off' | 'context' | 'track'): Promise<void>;
   addToQueue(uri: string): Promise<void>;
+  waitForPlayback(timeoutMs?: number): Promise<SoloistPlaybackState>;
   subscribe(callback: (state: SoloistPlaybackState) => void): () => void;
 }

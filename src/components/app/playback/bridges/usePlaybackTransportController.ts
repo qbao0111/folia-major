@@ -94,7 +94,6 @@ export function usePlaybackTransportController({
 
         if (usePlaybackStore.getState().playbackRoute === 'soloist') {
             void soloistAdapter.resume();
-            setPlayerState(PlayerState.PLAYING);
             return;
         }
 

@@ -12,9 +12,15 @@ export const isMacPlatform = typeof navigator !== 'undefined'
  * settings window asks this before it offers the row, the settings search before it lists it, and
  * the command palette before it offers the command.
  */
-export const runsOnWindows = (): boolean => (
-    typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('win')
-);
+export const runsOnWindows = (): boolean => {
+    if (typeof navigator !== 'undefined' && navigator.userAgent) {
+        if (navigator.userAgent.toLowerCase().includes('win')) return true;
+    }
+    if (typeof process !== 'undefined' && process.platform) {
+        return process.platform === 'win32';
+    }
+    return false;
+};
 
 /**
  * The modifier a shortcut declared as `ctrl` actually uses here: Cmd on macOS, Ctrl elsewhere.

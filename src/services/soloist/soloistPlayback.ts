@@ -17,7 +17,8 @@ export function isSoloistEligible(song: SongResult): boolean {
   if (song.sourceRef?.kind !== 'online' || song.sourceRef.providerId !== 'spotify') {
     return false;
   }
-  return useSoloistSettingsStore.getState().backend === 'soloist' || runsOnWindows();
+  const settings = useSoloistSettingsStore.getState();
+  return runsOnWindows() && settings.soloistEnabled && settings.backend === 'soloist';
 }
 
 /**
@@ -28,7 +29,7 @@ export async function playSoloistTrack(song: SongResult): Promise<void> {
   setDuration(song.durationMs ? song.durationMs / 1000 : 0);
   const uri = `spotify:track:${song.id}`;
   await soloistAdapter.play(uri);
-  setPlayerState(PlayerState.PLAYING);
+  await soloistAdapter.waitForPlayback(8000);
 }
 
 /**

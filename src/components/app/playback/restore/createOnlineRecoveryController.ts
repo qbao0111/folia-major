@@ -15,6 +15,7 @@ import { setAudioSrc, setCurrentSong, setPlayQueue, usePlaybackStore } from '../
 import { askedSongKeyRef, startOfAskedSong } from '../currentSong';
 import { loadOnlineSongAudio } from '../source/songAudioSource';
 import { onlineFailureOf, type OnlineFailure } from '../../../../services/onlineMusic/failure/onlineFailureCase';
+import { isSoloistEligible } from '../../../../services/soloist/soloistPlayback';
 
 // src/components/app/playback/restore/createOnlineRecoveryController.ts
 
@@ -97,7 +98,7 @@ export const createOnlineRecoveryController = ({
     onlineAudioUrlRefreshBufferMs,
 }: RecoveryControllerParams) => {
     const shouldRefreshCurrentOnlineAudioSource = () => {
-        if (!currentSong || isLocalPlaybackSong(currentSong) || isNavidromePlaybackSong(currentSong) || isStagePlaybackSong(currentSong)) {
+        if (!currentSong || isLocalPlaybackSong(currentSong) || isNavidromePlaybackSong(currentSong) || isStagePlaybackSong(currentSong) || isSoloistEligible(currentSong) || usePlaybackStore.getState().playbackRoute === 'soloist') {
             return false;
         }
 
@@ -126,7 +127,7 @@ export const createOnlineRecoveryController = ({
         const song = currentSong;
         const audioElement = audioRef.current;
 
-        if (!song || !audioElement || isLocalPlaybackSong(song) || isNavidromePlaybackSong(song) || isStagePlaybackSong(song)) {
+        if (!song || !audioElement || isLocalPlaybackSong(song) || isNavidromePlaybackSong(song) || isStagePlaybackSong(song) || isSoloistEligible(song) || usePlaybackStore.getState().playbackRoute === 'soloist') {
             return { recovered: false };
         }
 

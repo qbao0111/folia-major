@@ -156,19 +156,27 @@ class SpotifySoloistEngine {
           connection: 'connected',
           error: undefined,
         });
-        // Request immediate state & auth sync
-        this.send({ command: 'get_auth_state' });
-        this.send({ command: 'get_state' });
-        this.send({ command: 'get_queue', limit: 50 });
+        // Request auth state first. Playback state & queue are only requested after auth is confirmed.
+        try {
+          this.send({ command: 'get_auth_state' });
+        } catch (err) {
+          this.reportError(err.message);
+        }
       });
 
       ws.on('message', (raw) => {
         if (this.socket !== ws || this.stopped) return;
+        let parsed;
         try {
-          const parsed = JSON.parse(raw.toString('utf8'));
-          this.handleEvent(parsed);
+          parsed = JSON.parse(raw.toString('utf8'));
         } catch {
           this.reportError('Invalid JSON received from Soloist');
+          return;
+        }
+        try {
+          this.handleEvent(parsed);
+        } catch (err) {
+          this.reportError(err.message || 'Error processing Soloist event');
         }
       });
 
@@ -265,8 +273,12 @@ class SpotifySoloistEngine {
             deviceName,
             error: undefined,
           });
-          this.send({ command: 'get_state' });
-          this.send({ command: 'get_queue', limit: 50 });
+          try {
+            this.send({ command: 'get_state' });
+            this.send({ command: 'get_queue', limit: 50 });
+          } catch (err) {
+            this.reportError(err.message);
+          }
         } else {
           this.update({
             ...initialSoloistState(),
@@ -317,7 +329,13 @@ class SpotifySoloistEngine {
           speed: 0,
           error: undefined,
         });
-        this.send({ command: 'get_state' });
+        if (this.state.loggedIn) {
+          try {
+            this.send({ command: 'get_state' });
+          } catch (err) {
+            this.reportError(err.message);
+          }
+        }
         break;
       }
 
@@ -374,10 +392,15 @@ class SpotifySoloistEngine {
       }
 
       case 'command_result': {
-        this.update({
-          ...prev,
-          lastAccepted: e.command,
-        });
+        if (e.ok === false) {
+          const reason = e.message || `Command '${e.command}' was rejected by Soloist`;
+          this.reportError(reason);
+        } else {
+          this.update({
+            ...prev,
+            lastAccepted: e.command,
+          });
+        }
         break;
       }
 

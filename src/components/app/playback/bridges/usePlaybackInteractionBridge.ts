@@ -19,7 +19,7 @@ import { currentTime } from '../../../../stores/motionSignals';
 import { errorFields } from '../../../../utils/errorText';
 import { hifiTransport, isHifiRoute } from '../../../../services/hifi/hifiPlayback';
 import { seekHifiRoute } from '../../../hifi/hifiRouteTransport';
-import { soloistAdapter } from '../../../../services/soloist/soloistAdapter';
+import { isSoloistRoute, soloistAdapter } from '../../../../services/soloist/soloistAdapter';
 
 // src/components/app/playback/bridges/usePlaybackInteractionBridge.ts
 
@@ -161,6 +161,16 @@ export function usePlaybackInteractionBridge({
             return;
         }
 
+        // Soloist route: daemon handles playback independently with no internal audio deck source.
+        if (isSoloistRoute()) {
+            if (playerState === PlayerState.PLAYING) {
+                pausePlayback();
+            } else {
+                startPlaybackFromInteraction();
+            }
+            return;
+        }
+
         // The element is still playing while a pause fades out, so the check below would read it as
         // playing and pause again. A second press during the fade is a resume.
         if (playbackFade.isFadingOut()) {
@@ -274,8 +284,8 @@ export function usePlaybackInteractionBridge({
                     break;
                 }
                 case 'Space':
-                    // On the HiFi route `audioSrc` is null: mpv has the song.
-                    if (currentSong && (audioSrc || isHifiRoute() || isNowPlayingStageActive || (activePlaybackContext === 'stage' && stageActiveEntryKind === 'lyrics'))) {
+                    // On the HiFi and Soloist routes `audioSrc` is null: an external engine has the song.
+                    if (currentSong && (audioSrc || isHifiRoute() || isSoloistRoute() || isNowPlayingStageActive || (activePlaybackContext === 'stage' && stageActiveEntryKind === 'lyrics'))) {
                         event.preventDefault();
                         if (isNowPlayingStageActive) {
                             return;

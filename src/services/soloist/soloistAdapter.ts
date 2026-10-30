@@ -178,6 +178,45 @@ class ElectronSoloistAdapter implements SoloistAdapter {
     const res = await window.electron.soloist.command('add-to-queue', { uri });
     if (!res.ok) throw new Error(res.error || 'Failed to add track to Soloist queue');
   }
+
+  waitForPlayback(timeoutMs = 6000): Promise<SoloistPlaybackState> {
+    if (this.state.status === 'playing' && this.state.active) {
+      return Promise.resolve(this.state);
+    }
+
+    return new Promise((resolve, reject) => {
+      let unsub: (() => void) | null = null;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (unsub) {
+          unsub();
+          unsub = null;
+        }
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
+
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Soloist playback start timed out waiting for active playback'));
+      }, timeoutMs);
+
+      unsub = this.subscribe((state) => {
+        if (state.error) {
+          cleanup();
+          reject(new Error(state.error));
+          return;
+        }
+        if (state.status === 'playing') {
+          cleanup();
+          resolve(state);
+        }
+      });
+    });
+  }
 }
 
 export const soloistAdapter: SoloistAdapter = new ElectronSoloistAdapter();
