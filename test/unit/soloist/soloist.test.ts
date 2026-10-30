@@ -450,10 +450,235 @@ describe('Soloist Playback Confirmation & Progress Sync', () => {
     expect(current).toBeDefined();
     expect(current?.id).toBe('adopted123');
     expect(current?.name).toBe('PHÓNG ZÌN ZÌN');
-    expect(current?.sourceRef?.providerId).toBe('spotify');
+    expect(current?.sourceRef?.kind === 'online' ? current.sourceRef.providerId : null).toBe('spotify');
     // Duration must be updated
     expect(usePlaybackStore.getState().duration).toBe(203);
     // Player state must be PLAYING
     expect(usePlaybackStore.getState().playerState).toBe(PlayerState.PLAYING);
+  });
+
+  it('waitForPlayback requires exact matching track URI, connection, auth, and active state', async () => {
+    // Current state has a different track playing
+    (soloistAdapter as any).updateState({
+      connection: 'connected',
+      loggedIn: true,
+      active: true,
+      status: 'playing',
+      positionMs: 1000,
+      anchorMono: performance.now(),
+      track: {
+        uri: 'spotify:track:other_track',
+        name: 'Other',
+        artist: 'Other',
+        album: 'Other',
+        durationMs: 100000,
+      },
+    });
+
+    let resolved = false;
+    const waitPromise = soloistAdapter.waitForPlayback('spotify:track:target_track', { timeoutMs: 500 }).then(() => {
+      resolved = true;
+    });
+
+    // Should NOT resolve for other_track
+    await new Promise((r) => setTimeout(r, 50));
+    expect(resolved).toBe(false);
+
+    // Now update state with target_track
+    (soloistAdapter as any).updateState({
+      connection: 'connected',
+      loggedIn: true,
+      active: true,
+      status: 'playing',
+      positionMs: 2000,
+      anchorMono: performance.now(),
+      track: {
+        uri: 'spotify:track:target_track',
+        name: 'Target',
+        artist: 'Target',
+        album: 'Target',
+        durationMs: 100000,
+      },
+    });
+
+    await waitPromise;
+    expect(resolved).toBe(true);
+  });
+
+  it('waitForPlayback handles synchronous subscription resolution and AbortSignal cancellation', async () => {
+    // Set target state beforehand
+    (soloistAdapter as any).updateState({
+      connection: 'connected',
+      loggedIn: true,
+      active: true,
+      status: 'playing',
+      positionMs: 0,
+      anchorMono: performance.now(),
+      track: {
+        uri: 'spotify:track:sync_test',
+        name: 'Sync Test',
+        artist: 'Artist',
+        album: 'Album',
+        durationMs: 100000,
+      },
+    });
+
+    // Synchronous resolution test
+    const res = await soloistAdapter.waitForPlayback('spotify:track:sync_test');
+    expect(res.track?.uri).toBe('spotify:track:sync_test');
+
+    // AbortSignal test
+    const controller = new AbortController();
+    controller.abort('User skipped quickly');
+    await expect(
+      soloistAdapter.waitForPlayback('spotify:track:aborted_test', { signal: controller.signal })
+    ).rejects.toThrow('User skipped quickly');
+  });
+
+  it('keeps progress monotonic and does not reset on unrelated events (volume, options, command_result)', async () => {
+    (soloistAdapter as any).updateState({
+      connection: 'connected',
+      loggedIn: true,
+      active: true,
+      status: 'playing',
+      positionMs: 10000,
+      anchorMono: performance.now(),
+      anchorWall: Date.now() - 50,
+      speed: 1,
+      volume: 50,
+      track: {
+        uri: 'spotify:track:clock_test',
+        name: 'Clock Test',
+        artist: 'Artist',
+        album: 'Album',
+        durationMs: 60000,
+      },
+    });
+
+    const progressBefore = soloistAdapter.getProgressMs();
+    expect(progressBefore).toBeGreaterThanOrEqual(10000);
+
+    // Let time advance
+    await new Promise((r) => setTimeout(r, 60));
+    const progressAfterWait = soloistAdapter.getProgressMs();
+    expect(progressAfterWait).toBeGreaterThan(progressBefore);
+
+    // Volume changed event arrives from main process with stale positionMs (10000)
+    (soloistAdapter as any).updateState({
+      connection: 'connected',
+      loggedIn: true,
+      active: true,
+      status: 'playing',
+      positionMs: 10000, // Stale positionMs from volume_changed
+      anchorMono: performance.now(),
+      anchorWall: Date.now(),
+      speed: 1,
+      volume: 80, // Volume updated
+      track: {
+        uri: 'spotify:track:clock_test',
+        name: 'Clock Test',
+        artist: 'Artist',
+        album: 'Album',
+        durationMs: 60000,
+      },
+    });
+
+    const progressAfterVolume = soloistAdapter.getProgressMs();
+    // Must remain monotonic! Must NOT reset back to 10000!
+    expect(progressAfterVolume).toBeGreaterThanOrEqual(progressAfterWait);
+
+    // Options changed event arrives with stale positionMs (10000)
+    (soloistAdapter as any).updateState({
+      connection: 'connected',
+      loggedIn: true,
+      active: true,
+      status: 'playing',
+      positionMs: 10000,
+      anchorMono: performance.now(),
+      anchorWall: Date.now(),
+      speed: 1,
+      shuffle: true,
+      track: {
+        uri: 'spotify:track:clock_test',
+        name: 'Clock Test',
+        artist: 'Artist',
+        album: 'Album',
+        durationMs: 60000,
+      },
+    });
+
+    const progressAfterOptions = soloistAdapter.getProgressMs();
+    expect(progressAfterOptions).toBeGreaterThanOrEqual(progressAfterVolume);
+  });
+
+  it('main engine consistently provides anchorWall across events', () => {
+    const engine = new SpotifySoloistEngine(async () => 'ws://127.0.0.1:9000');
+    engine.handleEvent({
+      type: 'playback_state',
+      status: 'playing',
+      is_active: true,
+      position: { position_ms: 5000, timestamp_ms: Date.now(), speed: 1 },
+      item: { uri: 'spotify:track:engine_test' },
+    });
+    expect(engine.state.anchorWall).toBeGreaterThan(0);
+
+    engine.handleEvent({
+      type: 'volume_changed',
+      volume: 75,
+    });
+    expect(engine.state.anchorWall).toBeGreaterThan(0);
+
+    engine.handleEvent({
+      type: 'options_changed',
+      options: { shuffle: true, repeat: 'track' },
+    });
+    expect(engine.state.anchorWall).toBeGreaterThan(0);
+
+    engine.handleEvent({
+      type: 'command_result',
+      ok: true,
+      command: 'play',
+    });
+    expect(engine.state.anchorWall).toBeGreaterThan(0);
+  });
+
+  it('normalizes artist metadata from diverse Spotify response shapes without Unknown Artist', () => {
+    // 1. Direct item.artists array
+    const trackWithArtists = normalizeSoloistTrack({
+      uri: 'spotify:track:1',
+      name: 'Song 1',
+      artists: [{ name: 'Low G' }, { name: 'tlinh' }],
+    });
+    expect(trackWithArtists?.artist).toBe('Low G, tlinh');
+
+    // 2. decorations.artists array
+    const trackWithDecArtists = normalizeSoloistTrack({
+      uri: 'spotify:track:2',
+      decorations: {
+        identity: { name: 'Song 2' },
+        artists: [{ name: 'sombr' }],
+      },
+    });
+    expect(trackWithDecArtists?.artist).toBe('sombr');
+
+    // 3. decorations.artist_name string
+    const trackWithArtistName = normalizeSoloistTrack({
+      uri: 'spotify:track:3',
+      decorations: {
+        identity: { name: 'Song 3' },
+        artist_name: 'Chris Brown',
+      },
+    });
+    expect(trackWithArtistName?.artist).toBe('Chris Brown');
+
+    // 4. creators with direct name
+    const trackWithCreatorNames = normalizeSoloistTrack({
+      uri: 'spotify:track:4',
+      decorations: {
+        identity: { name: 'Song 4' },
+        creators: [{ name: 'Post Malone' }],
+      },
+    });
+    expect(trackWithCreatorNames?.artist).toBe('Post Malone');
   });
 });

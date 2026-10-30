@@ -49,16 +49,42 @@ class ElectronSoloistAdapter implements SoloistAdapter {
   }
 
   private updateState(incoming: SoloistPlaybackState) {
-    // Re-anchor anchorMono in the Renderer process's own monotonic clock domain.
-    const transitMs = incoming.anchorWall && incoming.status === 'playing'
-      ? Math.max(0, Math.min(2000, Date.now() - incoming.anchorWall))
-      : 0;
+    const isSameTrack = Boolean(
+      this.state.track?.uri &&
+      incoming.track?.uri &&
+      this.state.track.uri === incoming.track.uri
+    );
+    const wasPlaying = this.state.status === 'playing';
+    const isPlaying = incoming.status === 'playing';
 
-    this.state = {
-      ...incoming,
-      positionMs: incoming.positionMs + transitMs,
-      anchorMono: performance.now(),
-    };
+    if (wasPlaying && isPlaying && isSameTrack && incoming.positionMs === this.state.positionMs) {
+      // Unrelated event (volume_changed, options_changed, command_result, etc.) where positionMs did not advance
+      // Preserve our continuous renderer monotonic clock anchor
+      this.state = {
+        ...incoming,
+        positionMs: this.state.positionMs,
+        anchorMono: this.state.anchorMono,
+        anchorWall: this.state.anchorWall,
+      };
+    } else {
+      // Real position update, seek, track change, or status transition
+      const transitMs = incoming.anchorWall && isPlaying
+        ? Math.max(0, Math.min(2000, Date.now() - incoming.anchorWall))
+        : 0;
+
+      const candidatePos = incoming.positionMs + transitMs;
+      const currentProgress = this.getProgressMs();
+      const isExplicitSeek = Math.abs(candidatePos - currentProgress) > 2000;
+      const finalPos = (wasPlaying && isPlaying && isSameTrack && !isExplicitSeek)
+        ? Math.max(candidatePos, currentProgress)
+        : candidatePos;
+
+      this.state = {
+        ...incoming,
+        positionMs: finalPos,
+        anchorMono: performance.now(),
+      };
+    }
 
     // Synchronize Folia player store when Soloist route is actively sounding
     if (isSoloistRoute()) {
@@ -203,16 +229,40 @@ class ElectronSoloistAdapter implements SoloistAdapter {
     if (!res.ok) throw new Error(res.error || 'Failed to add track to Soloist queue');
   }
 
-  waitForPlayback(timeoutMs = 6000): Promise<SoloistPlaybackState> {
-    if (this.state.status === 'playing' && this.state.active) {
+  waitForPlayback(
+    expectedUri: string,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {}
+  ): Promise<SoloistPlaybackState> {
+    const { timeoutMs = 8000, signal } = options;
+
+    const isSatisfied = (s: SoloistPlaybackState): boolean => {
+      return (
+        s.connection === 'connected' &&
+        s.loggedIn === true &&
+        s.active === true &&
+        s.status === 'playing' &&
+        s.track !== null &&
+        s.track.uri === expectedUri
+      );
+    };
+
+    if (isSatisfied(this.state)) {
       return Promise.resolve(this.state);
     }
 
+    if (signal?.aborted) {
+      return Promise.reject(new Error(signal.reason || 'Playback wait aborted'));
+    }
+
     return new Promise((resolve, reject) => {
+      let isCleanedUp = false;
       let unsub: (() => void) | null = null;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      let abortHandler: (() => void) | null = null;
 
       const cleanup = () => {
+        if (isCleanedUp) return;
+        isCleanedUp = true;
         if (unsub) {
           unsub();
           unsub = null;
@@ -221,24 +271,43 @@ class ElectronSoloistAdapter implements SoloistAdapter {
           clearTimeout(timer);
           timer = null;
         }
+        if (signal && abortHandler) {
+          signal.removeEventListener('abort', abortHandler);
+          abortHandler = null;
+        }
       };
 
       timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Soloist playback start timed out waiting for active playback'));
+        reject(new Error(`Soloist playback timed out waiting for track: ${expectedUri}`));
       }, timeoutMs);
 
-      unsub = this.subscribe((state) => {
+      if (signal) {
+        abortHandler = () => {
+          cleanup();
+          reject(new Error(signal.reason || 'Playback wait aborted'));
+        };
+        signal.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      const subscription = this.subscribe((state) => {
+        if (isCleanedUp) return;
         if (state.error) {
           cleanup();
           reject(new Error(state.error));
           return;
         }
-        if (state.status === 'playing') {
+        if (isSatisfied(state)) {
           cleanup();
           resolve(state);
         }
       });
+
+      if (isCleanedUp) {
+        subscription();
+      } else {
+        unsub = subscription;
+      }
     });
   }
 }

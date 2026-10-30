@@ -16,6 +16,7 @@ import {
 } from '../../stores/usePlaybackStore';
 import { makeSongCurrent } from '../../components/app/playback/currentSong';
 import { loadOnlineSongLyrics } from '../onlinePlayback';
+import { omni } from '../onlineMusic/omni';
 import { useOnlineProviderAccountStore } from '../../stores/useOnlineProviderAccountStore';
 import { runsOnWindows } from '../../utils/platform';
 import { soloistAdapter, setSoloistPlaybackSyncHandler } from './soloistAdapter';
@@ -42,15 +43,30 @@ export function isSoloistEligible(song: SongResult): boolean {
   return runsOnWindows() && settings.soloistEnabled && settings.backend === 'soloist';
 }
 
+let inFlightSoloistPlayController: AbortController | null = null;
+
 /**
  * Initiates Soloist playback for an eligible song.
  */
-export async function playSoloistTrack(song: SongResult): Promise<void> {
+export async function playSoloistTrack(song: SongResult, signal?: AbortSignal): Promise<void> {
+  // Cancel previous in-flight play wait on rapid track switching
+  if (inFlightSoloistPlayController) {
+    inFlightSoloistPlayController.abort('New track requested');
+    inFlightSoloistPlayController = null;
+  }
+
+  const controller = new AbortController();
+  inFlightSoloistPlayController = controller;
+
+  if (signal) {
+    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+  }
+
   setPlaybackRoute('soloist');
   setDuration(song.durationMs ? song.durationMs / 1000 : 0);
   const uri = `${SP_URI_PREFIX}${song.id}`;
   await soloistAdapter.play(uri);
-  await soloistAdapter.waitForPlayback(8000);
+  await soloistAdapter.waitForPlayback(uri, { timeoutMs: 8000, signal: controller.signal });
 }
 
 /**
@@ -116,24 +132,57 @@ export async function adoptSoloistTrack(track: SoloistTrack, status: SoloistPlay
     setPlayerState(PlayerState.PAUSED);
   }
 
+  // Check if song exists in playQueue or currentSong for richer metadata
+  const queue = usePlaybackStore.getState().playQueue;
+  const matchedQueuedSong = queue.find(s => s.id === trackId);
+  const currentSong = usePlaybackStore.getState().currentSong;
+  const existingSong = (currentSong?.id === trackId ? currentSong : null) || matchedQueuedSong;
+
+  const resolvedArtist = track.artist ||
+    (existingSong?.artists && existingSong.artists.map(a => a.name).filter(Boolean).join(', ')) ||
+    '';
+  const resolvedAlbum = track.album || existingSong?.album?.name || '';
+  const resolvedCover = track.artwork || existingSong?.album?.coverUrl || '';
+  const resolvedName = (track.name && track.name !== 'Untitled') ? track.name : (existingSong?.name || 'Untitled');
+
   const adoptedSong: SongResult = {
     id: trackId,
-    name: track.name || 'Unknown Track',
-    artists: [{ id: '', name: track.artist || 'Unknown Artist' }],
+    name: resolvedName,
+    artists: resolvedArtist
+      ? [{ id: '', name: resolvedArtist }]
+      : (existingSong?.artists?.length ? existingSong.artists : [{ id: '', name: 'Unknown Artist' }]),
     album: {
       id: '',
-      name: track.album || '',
-      coverUrl: track.artwork || '',
+      name: resolvedAlbum,
+      coverUrl: resolvedCover,
     },
-    durationMs: track.durationMs || 0,
+    durationMs: track.durationMs || existingSong?.durationMs || 0,
     sourceRef: { kind: 'online', providerId: SP_PROVIDER, mediaId: trackId },
   };
 
   makeSongCurrent(adoptedSong);
 
-  const queue = usePlaybackStore.getState().playQueue;
   if (queue.length === 0) {
     setPlayQueue([adoptedSong]);
+  }
+
+  // Background metadata enrichment if artist is still missing
+  if (!resolvedArtist) {
+    void omni.getSongDetail(SP_PROVIDER, trackId).then(detail => {
+      if (detail && detail.artists && detail.artists.length > 0) {
+        setCurrentSong(prev => {
+          if (!prev || prev.id !== trackId) return prev;
+          return {
+            ...prev,
+            name: (detail.name && detail.name !== 'Untitled') ? detail.name : prev.name,
+            artists: detail.artists,
+            album: detail.album?.name ? detail.album : prev.album,
+          };
+        });
+      }
+    }).catch(() => {
+      // ignore
+    });
   }
 
   await loadSoloistTrackLyrics(adoptedSong);

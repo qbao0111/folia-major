@@ -13,6 +13,7 @@ const initialSoloistState = () => ({
   track: null,
   positionMs: 0,
   anchorMono: 0,
+  anchorWall: 0,
   speed: 0,
   volume: 50,
   shuffle: false,
@@ -29,33 +30,80 @@ const initialSoloistState = () => ({
 function normalizeSoloistTrack(item) {
   if (!item || !item.uri) return null;
   const d = item.decorations || {};
-  const covers = (d.visual_identity && d.visual_identity.cover) || [];
+  const covers = (d.visual_identity && d.visual_identity.cover) ||
+                 (item.album && item.album.images) ||
+                 (d.album && d.album.images) || [];
   const chosenCover =
     covers.find(c => c.size === 'xlarge') ||
     covers.find(c => c.size === 'large') ||
     covers[0];
-  const url = chosenCover ? chosenCover.url : undefined;
-  const artwork = url && /^https:\/\/(i|mosaic)\.scdn\.co\//.test(url) ? url : undefined;
+  const url = chosenCover ? (chosenCover.url || chosenCover) : undefined;
+  const artwork = typeof url === 'string' && /^https:\/\/(i|mosaic)\.scdn\.co\//.test(url) ? url : undefined;
 
-  const creators = d.creators || [];
-  const artistNames = creators
-    .map(c => c.entity && c.entity.decorations && c.entity.decorations.identity && c.entity.decorations.identity.name)
-    .filter(Boolean)
-    .join(', ');
+  let artistNames = '';
+  if (Array.isArray(d.creators) && d.creators.length > 0) {
+    artistNames = d.creators
+      .map(c => {
+        if (!c) return '';
+        if (typeof c === 'string') return c;
+        return (
+          (c.entity && c.entity.decorations && c.entity.decorations.identity && c.entity.decorations.identity.name) ||
+          (c.entity && c.entity.name) ||
+          (c.decorations && c.decorations.identity && c.decorations.identity.name) ||
+          (c.identity && c.identity.name) ||
+          c.name ||
+          ''
+        );
+      })
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  if (!artistNames && Array.isArray(d.artists) && d.artists.length > 0) {
+    artistNames = d.artists
+      .map(a => (typeof a === 'string' ? a : a.name || ''))
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  if (!artistNames && Array.isArray(item.artists) && item.artists.length > 0) {
+    artistNames = item.artists
+      .map(a => (typeof a === 'string' ? a : a.name || ''))
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  if (!artistNames) {
+    artistNames = d.artist_name || d.artist || item.artist_name || item.artist || '';
+  }
 
   const parentAlbum =
-    d.parent &&
-    d.parent.entity &&
-    d.parent.entity.decorations &&
-    d.parent.entity.decorations.identity &&
-    d.parent.entity.decorations.identity.name;
+    (d.parent && d.parent.entity && d.parent.entity.decorations && d.parent.entity.decorations.identity && d.parent.entity.decorations.identity.name) ||
+    (d.parent && d.parent.entity && d.parent.entity.name) ||
+    (d.album && (d.album.name || d.album)) ||
+    (item.album && (item.album.name || item.album)) ||
+    d.album_name ||
+    item.album_name ||
+    '';
+
+  const trackName =
+    (d.identity && d.identity.name) ||
+    item.name ||
+    d.name ||
+    'Untitled';
+
+  const durationMs =
+    (d.playback && d.playback.duration_ms) ||
+    item.duration_ms ||
+    d.duration_ms ||
+    0;
 
   return {
     uri: item.uri,
-    name: (d.identity && d.identity.name) || 'Untitled',
+    name: trackName,
     artist: artistNames || '',
-    album: parentAlbum || '',
-    durationMs: (d.playback && d.playback.duration_ms) || 0,
+    album: typeof parentAlbum === 'string' ? parentAlbum : '',
+    durationMs: Number(durationMs) || 0,
     artwork,
   };
 }
@@ -103,6 +151,9 @@ class SpotifySoloistEngine {
   }
 
   update(nextState) {
+    if (nextState && typeof nextState === 'object' && !nextState.anchorWall) {
+      nextState.anchorWall = Date.now();
+    }
     this.state = nextState;
     for (const listener of this.listeners) {
       try {
@@ -256,6 +307,7 @@ class SpotifySoloistEngine {
       return {
         positionMs: Math.max(0, positionMs + elapsed),
         anchorMono: mono,
+        anchorWall: wall,
         speed,
       };
     };
@@ -271,6 +323,7 @@ class SpotifySoloistEngine {
             loggedIn: true,
             active: isActive,
             deviceName,
+            anchorWall: prev.anchorWall || wall,
             error: undefined,
           });
           try {
@@ -291,7 +344,7 @@ class SpotifySoloistEngine {
 
       case 'playback_state': {
         const track = normalizeSoloistTrack(e.item);
-        const pos = e.position ? anchorPosition(e.position) : { positionMs: 0, anchorMono: mono, speed: 0 };
+        const pos = e.position ? anchorPosition(e.position) : { positionMs: 0, anchorMono: mono, anchorWall: wall, speed: 0 };
         this.update({
           ...prev,
           status: e.status || 'idle',
@@ -309,11 +362,15 @@ class SpotifySoloistEngine {
 
       case 'playback_changed': {
         const status = e.status || 'idle';
+        const isPlaying = status === 'playing';
+        const currentPos = this.getProgressMs();
         this.update({
           ...prev,
           status,
-          speed: status === 'playing' ? prev.speed || 1 : 0,
+          speed: isPlaying ? prev.speed || 1 : 0,
+          positionMs: currentPos,
           anchorMono: mono,
+          anchorWall: wall,
           error: undefined,
         });
         break;
@@ -326,6 +383,7 @@ class SpotifySoloistEngine {
           track: track || prev.track,
           positionMs: 0,
           anchorMono: mono,
+          anchorWall: wall,
           speed: 0,
           error: undefined,
         });
@@ -366,17 +424,32 @@ class SpotifySoloistEngine {
 
       case 'volume_changed': {
         if (typeof e.volume === 'number') {
-          this.update({ ...prev, volume: e.volume });
+          const isPlaying = prev.status === 'playing';
+          this.update({
+            ...prev,
+            volume: e.volume,
+            ...(isPlaying ? {
+              positionMs: this.getProgressMs(),
+              anchorMono: mono,
+              anchorWall: wall,
+            } : {}),
+          });
         }
         break;
       }
 
       case 'options_changed': {
         if (e.options) {
+          const isPlaying = prev.status === 'playing';
           this.update({
             ...prev,
             shuffle: Boolean(e.options.shuffle),
             repeat: e.options.repeat || 'off',
+            ...(isPlaying ? {
+              positionMs: this.getProgressMs(),
+              anchorMono: mono,
+              anchorWall: wall,
+            } : {}),
           });
         }
         break;
@@ -396,9 +469,15 @@ class SpotifySoloistEngine {
           const reason = e.message || `Command '${e.command}' was rejected by Soloist`;
           this.reportError(reason);
         } else {
+          const isPlaying = prev.status === 'playing';
           this.update({
             ...prev,
             lastAccepted: e.command,
+            ...(isPlaying ? {
+              positionMs: this.getProgressMs(),
+              anchorMono: mono,
+              anchorWall: wall,
+            } : {}),
           });
         }
         break;
@@ -436,7 +515,16 @@ class SpotifySoloistEngine {
   }
 
   seek(positionMs) {
-    this.send({ command: 'seek', position_ms: Math.max(0, Math.round(positionMs)) });
+    const mono = performance.now();
+    const wall = Date.now();
+    const target = Math.max(0, Math.round(positionMs));
+    this.update({
+      ...this.state,
+      positionMs: target,
+      anchorMono: mono,
+      anchorWall: wall,
+    });
+    this.send({ command: 'seek', position_ms: target });
   }
 
   setVolume(volume) {
