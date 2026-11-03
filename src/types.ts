@@ -1130,7 +1130,7 @@ export const DEFAULT_SORA_BACKGROUND_TUNING: SoraBackgroundTuning = {
 
 export const DEFAULT_MONET_TUNING: MonetTuning = {
   keywordColoringEnabled: true,
-  showDescription: true,
+  showDescription: false,
   showAudioVisualization: true,
   audioStyle: 'bar',
   fontScale: 1.2,
