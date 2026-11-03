@@ -108,6 +108,7 @@ export async function prepareBundledMnn({ platform = process.platform, arch = pr
     const print = await fingerprint();
     const stamp = `MNN ${MNN_COMMIT}\nInputs SHA-256: ${print}\n`;
     try {
+        if (existsSync(path.join(outDir, library))) return outDir;
         if ((await readFile(marker, 'utf8')) === stamp && existsSync(path.join(outDir, library))) return outDir;
     } catch {
         // Missing or stale: built below.

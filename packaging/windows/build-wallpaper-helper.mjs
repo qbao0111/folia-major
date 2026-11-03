@@ -27,6 +27,11 @@ if (process.platform !== 'win32') {
   process.exit(0);
 }
 
+if (existsSync(OUT_BIN)) {
+  console.log(`[wallpaper-helper] ${OUT_BIN} already present, skipping cargo build`);
+  process.exit(0);
+}
+
 mkdirSync(OUT_DIR, { recursive: true });
 run('cargo', ['build', '--release']);
 copyFileSync(path.join(SRC_DIR, 'target', 'release', 'folia-wallpaper-helper.exe'), OUT_BIN);
